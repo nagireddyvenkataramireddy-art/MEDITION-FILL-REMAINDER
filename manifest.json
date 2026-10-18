@@ -1,0 +1,21 @@
+{
+  "short_name": "MediMind",
+  "name": "MediMind Smart Health",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3063/3063822.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3063/3063822.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#f0f9ff",
+  "background_color": "#f0f9ff",
+  "orientation": "portrait"
+}

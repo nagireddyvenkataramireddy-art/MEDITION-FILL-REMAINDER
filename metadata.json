@@ -1,0 +1,9 @@
+{
+  "name": "MediAssist",
+  "description": "An intelligent medicine reminder application powered by Gemini. Features natural language scheduling and smart medication insights.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation",
+    "microphone"
+  ]
+}
