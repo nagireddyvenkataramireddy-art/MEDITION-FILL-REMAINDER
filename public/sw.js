@@ -1,6 +1,13 @@
-// Service Worker for MediMind Smart Medication Reminders (Web Push + Background Alarms)
-const CACHE_NAME = 'medimind-v4';
-const APP_ICON = 'https://cdn-icons-png.flaticon.com/512/3063/3063822.png';
+// Service Worker for MediMind Smart Medication Reminders (Web Push + Background Alarms + Offline App Shell)
+const CACHE_NAME = 'medimind-v5';
+const APP_ICON = '/icons/icon-192x192.svg';
+const APP_SHELL_ASSETS = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/icons/icon-192x192.svg',
+  '/icons/icon-512x512.svg'
+];
 const DB_NAME = 'medimind_sw_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'alarms';
@@ -98,16 +105,73 @@ async function showSafeNotification(title, richOptions) {
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(APP_SHELL_ASSETS).catch(() => {});
+    })
+  );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
+      );
       await self.clients.claim();
       await restoreAndScheduleAlarms();
       startSwCheckLoop();
     })()
   );
+});
+
+// Offline-capable fetch handler (network-first with cache fallback for navigation & static assets)
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+
+  const url = new URL(request.url);
+  // Skip API calls and external analytics
+  if (url.pathname.startsWith('/api/')) return;
+
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', copy)).catch(() => {});
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match('/index.html');
+          return cached || caches.match('/');
+        })
+    );
+    return;
+  }
+
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      caches.match(request).then((cachedResponse) => {
+        const fetchPromise = fetch(request)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              const copy = networkResponse.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
+            }
+            return networkResponse;
+          })
+          .catch(() => cachedResponse);
+
+        return cachedResponse || fetchPromise;
+      })
+    );
+  }
 });
 
 // Trigger a high-priority system notification with vibration and alert sound

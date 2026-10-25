@@ -2,37 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#f0f9ff">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#2563eb">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>MediMind - Smart Medicine Reminder</title>
-    <link rel="manifest" href="./manifest.json">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="MediMind">
+    <meta name="description" content="Smart medication tracker, lock-screen pill reminder, and offline health companion for any mobile device.">
+    <meta property="og:title" content="MediMind: Smart Medicine Reminder">
+    <meta property="og:description" content="Smart medication tracker, lock-screen pill reminder, and offline health companion for any mobile device.">
+    <title>MediMind: Smart Medicine Reminder</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon-192x192.svg">
+    <link rel="apple-touch-icon" href="/icons/icon-192x192.svg">
     
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 
     <!-- Critical Fallback CSS (Applied immediately) -->
     <style>
       /* Force system font immediately to avoid Times New Roman */
       html {
         font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background-color: #f0f9ff;
+        background-color: #f8fafc;
         -webkit-tap-highlight-color: transparent;
+        -webkit-text-size-adjust: 100%;
       }
       body {
         margin: 0;
         padding: 0;
-        background-color: #f0f9ff;
+        background-color: #f8fafc;
         color: #1e293b;
         overscroll-behavior-y: none; /* Prevent pull-to-refresh on mobile */
       }
       #root {
         min-height: 100vh;
+        min-height: 100dvh;
         display: flex;
         flex-direction: column;
+      }
+      /* Safe area utilities for notched iPhones, Dynamic Island, and gesture bars */
+      .pt-safe {
+        padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
+      }
+      .pb-safe {
+        padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
       }
       /* Prevent massive icons if CSS fails */
       svg {
@@ -43,6 +59,9 @@
       /* Basic layout resets */
       *, ::before, ::after {
         box-sizing: border-box;
+      }
+      button, a {
+        touch-action: manipulation;
       }
       /* Hide scrollbar for clean UI */
       .no-scrollbar::-webkit-scrollbar {

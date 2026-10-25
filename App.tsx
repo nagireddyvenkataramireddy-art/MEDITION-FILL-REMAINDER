@@ -11,9 +11,11 @@ import SettingsModal from './components/SettingsModal';
 import OnboardingModal from './components/OnboardingModal';
 import NotificationModal from './components/NotificationModal';
 import DuePillAlertModal from './components/DuePillAlertModal';
+import DeviceCompatibilityModal from './components/DeviceCompatibilityModal';
 import { playNotificationSound, initAudio, startStandbyAudioGuard, stopStandbyAudioGuard } from './services/audioService';
+import { useMobileCompatibility } from './services/useMobileCompatibility';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Plus, Bell, Home, Calendar, Activity, ChevronDown, User, HeartPulse, MessageSquareText } from 'lucide-react';
+import { Plus, Bell, Home, Calendar, Activity, ChevronDown, User, HeartPulse, MessageSquareText, Smartphone, Download, WifiOff } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { format, addMinutes } from 'date-fns';
 
@@ -48,6 +50,7 @@ const App: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
+  const [isCompatibilityModalOpen, setIsCompatibilityModalOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [editingMedication, setEditingMedication] = useState<Medication | null>(null);
   
@@ -61,6 +64,16 @@ const App: React.FC = () => {
     }
     return 'default';
   });
+
+  const {
+    diagnostics,
+    promptInstall,
+    refreshDiagnostics,
+    installBannerDismissed,
+    dismissInstallBanner,
+    compactMode,
+    toggleCompactMode,
+  } = useMobileCompatibility(notificationPermission);
 
   const [reminderSound, setReminderSound] = useState<SoundType>(() => 
     (localStorage.getItem('medimind_reminder_sound') as SoundType) || 'alert'
@@ -647,60 +660,104 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-800 font-sans pb-32">
-      <header className="px-6 pt-8 pb-4">
-        <div className="max-w-xl mx-auto flex items-center justify-between">
+    <div className="min-h-screen bg-[#f8fafc] text-slate-800 font-sans pb-24">
+      {/* Offline Schedule Access Indicator Banner */}
+      {!diagnostics.isOnline && (
+        <div className="bg-amber-500 text-white px-4 py-1.5 text-center text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm">
+          <WifiOff size={13} />
+          <span>Offline Mode • Saved pill schedules & reminders remain active</span>
+        </div>
+      )}
+
+      {/* Compact Sticky Mobile Top App Bar */}
+      <header className="sticky top-0 z-30 bg-[#f8fafc]/90 backdrop-blur-md border-b border-slate-200/60 px-3 sm:px-5 pt-safe pb-2">
+        <div className="max-w-xl md:max-w-5xl mx-auto flex items-center justify-between gap-2">
           <div className="relative">
             <button 
               onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-              className="flex items-center gap-3 bg-white border border-slate-100 rounded-full pl-1.5 pr-4 py-1.5 shadow-sm hover:shadow-md transition-all active:scale-95 ring-1 ring-black/5"
+              className="min-h-[44px] flex items-center gap-2.5 bg-white border border-slate-200/80 rounded-full pl-1.5 pr-3.5 py-1 shadow-sm hover:shadow transition-all active:scale-95"
             >
-              <div className="w-9 h-9 bg-blue-600 rounded-full flex items-center justify-center text-white text-xs shadow-inner">
-                <User size={18} />
+              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-xs shadow-inner">
+                <User size={16} />
               </div>
               <div className="text-left">
-                <p className="text-[9px] text-slate-400 font-black uppercase leading-none mb-1 tracking-widest">Hello,</p>
-                <p className="text-sm font-black text-[#1a2b4d] leading-none">{activeProfile.name}</p>
+                <p className="text-[8px] text-slate-400 font-black uppercase leading-none mb-0.5 tracking-widest">Profile</p>
+                <p className="text-xs font-black text-[#1a2b4d] leading-none truncate max-w-[110px]">{activeProfile.name}</p>
               </div>
-              <ChevronDown size={18} className="text-slate-300 ml-1" />
+              <ChevronDown size={15} className="text-slate-400" />
             </button>
             
             {isProfileMenuOpen && (
-              <div className="absolute top-full left-0 mt-3 w-56 bg-white rounded-[1.5rem] shadow-2xl border border-slate-50 p-3 z-50 animate-slideDown ring-1 ring-black/5">
-                <p className="text-[10px] font-black text-slate-400 uppercase p-3 tracking-widest">Select Account</p>
-                <button className="w-full flex items-center justify-between p-4 rounded-xl hover:bg-slate-50 text-sm font-black text-blue-600">
-                  <div className="flex items-center gap-3">
-                    <User size={18} /> {activeProfile.name}
+              <div className="absolute top-full left-0 mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-100 p-2.5 z-50 animate-slideDown">
+                <p className="text-[10px] font-black text-slate-400 uppercase px-3 py-2 tracking-widest">Select Account</p>
+                <button className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 text-xs font-black text-blue-600">
+                  <div className="flex items-center gap-2.5">
+                    <User size={16} /> {activeProfile.name}
                   </div>
-                  <div className="w-2.5 h-2.5 bg-blue-600 rounded-full shadow-sm"></div>
+                  <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
                 </button>
-                <div className="h-px bg-slate-100 my-2 mx-2"></div>
-                <button onClick={() => { setIsSettingsModalOpen(true); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-3 p-4 rounded-xl hover:bg-slate-50 text-sm font-black text-slate-500">
-                  <Plus size={18} /> Manage Profiles
+                <div className="h-px bg-slate-100 my-1.5 mx-2"></div>
+                <button onClick={() => { setIsSettingsModalOpen(true); setIsProfileMenuOpen(false); }} className="w-full flex items-center gap-2.5 p-3 rounded-xl hover:bg-slate-50 text-xs font-black text-slate-600">
+                  <Plus size={16} /> Manage Profiles
                 </button>
               </div>
             )}
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex items-center gap-1.5">
+            {/* One-Tap Install Button when installable on Android/Mobile */}
+            {!diagnostics.isStandalone && diagnostics.isInstallable && (
+              <button
+                onClick={promptInstall}
+                className="min-h-[44px] px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-full flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider shadow-sm active:scale-95 transition-all"
+                title="Install MediMind to Home Screen"
+              >
+                <Download size={14} />
+                <span className="hidden xs:inline">Install</span>
+              </button>
+            )}
+
+            {/* Device Compatibility & Health Check Button */}
+            <button
+              onClick={() => { initAudio(); setIsCompatibilityModalOpen(true); }}
+              className="relative w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-600 shadow-sm border border-slate-200/80 hover:text-blue-600 transition-colors active:scale-95"
+              title="Mobile Compatibility & Health Check"
+            >
+              <Smartphone size={19} className="text-blue-600" />
+              <span
+                className={`absolute top-2 right-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                  diagnostics.notificationPermission === 'granted' && diagnostics.swActive
+                    ? 'bg-emerald-500'
+                    : 'bg-blue-500'
+                }`}
+              />
+            </button>
+
+            {/* Phone Reminders & Sound Bell */}
             <button 
               onClick={() => { initAudio(); setIsNotificationModalOpen(true); }}
-              className="relative w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors active:scale-95"
+              className="relative w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-500 shadow-sm border border-slate-200/80 hover:text-blue-600 transition-colors active:scale-95"
               title="Phone Reminders & Alarms"
             >
-              <Bell size={22} className={notificationPermission === 'granted' ? 'text-blue-600' : 'text-slate-400'} />
+              <Bell size={19} className={notificationPermission === 'granted' ? 'text-blue-600' : 'text-slate-500'} />
               {notificationPermission !== 'granted' && (
                 <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white animate-pulse" />
               )}
             </button>
-            <button onClick={() => setIsSettingsModalOpen(true)} className="w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors active:scale-95">
-              <User size={22} />
+
+            {/* Profile & Settings */}
+            <button
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-500 shadow-sm border border-slate-200/80 hover:text-blue-600 transition-colors active:scale-95"
+              title="Settings & Medical ID"
+            >
+              <User size={19} />
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-xl mx-auto px-4 py-2">
+      <main className="max-w-xl md:max-w-5xl mx-auto px-3 sm:px-5 pt-3 pb-4">
         <ErrorBoundary>
           {activeTab === 'home' && (
             <Dashboard 
@@ -721,6 +778,12 @@ const App: React.FC = () => {
               userName={activeProfile.name}
               notificationPermission={notificationPermission}
               onOpenNotificationCenter={() => { initAudio(); setIsNotificationModalOpen(true); }}
+              diagnostics={diagnostics}
+              onOpenCompatibilityModal={() => { initAudio(); setIsCompatibilityModalOpen(true); }}
+              onPromptInstall={promptInstall}
+              installBannerDismissed={installBannerDismissed}
+              onDismissInstallBanner={dismissInstallBanner}
+              compactMode={compactMode}
             />
           )}
           {activeTab === 'history' && <HistoryView medications={currentMedications} logs={currentLogs} moods={currentMoods} userName={activeProfile.name} />}
@@ -736,9 +799,8 @@ const App: React.FC = () => {
             <VitalsView 
               vitals={currentVitals} 
               onAddVital={(v) => setVitals(prev => [...prev, {...v, profileId: activeProfileId}])}
-              watchConnected={false} // TODO: Implement actual Bluetooth connection
+              watchConnected={false}
               onSyncWatch={async () => {
-                // TODO: Implement actual Bluetooth sync
                 return null;
               }}
             />
@@ -747,40 +809,69 @@ const App: React.FC = () => {
         </ErrorBoundary>
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-4 py-4 pb-10 z-30 flex justify-between items-end shadow-[0_-8px_30px_rgb(0,0,0,0.06)]">
-        <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1.5 px-3 transition-all ${activeTab === 'home' ? 'text-blue-600 scale-105' : 'text-slate-300'}`}>
-          <Home size={24} strokeWidth={activeTab === 'home' ? 2.5 : 2} />
-          <span className="text-[10px] font-black uppercase tracking-widest leading-none">Home</span>
-        </button>
-        
-        <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center gap-1.5 px-3 transition-all ${activeTab === 'history' ? 'text-blue-600 scale-105' : 'text-slate-300'}`}>
-          <Calendar size={24} strokeWidth={activeTab === 'history' ? 2.5 : 2} />
-          <span className="text-[10px] font-black uppercase tracking-widest leading-none">History</span>
-        </button>
-        
-        <div className="relative px-2">
-          <button 
-            onClick={() => { setEditingMedication(null); setIsAddModalOpen(true); }} 
-            className="w-16 h-16 bg-blue-600 rounded-full text-white shadow-[0_12px_24px_rgba(37,99,235,0.4)] flex items-center justify-center border-4 border-white mb-2 transform -translate-y-2 active:scale-90 transition-all"
+      {/* Compact Fixed Bottom Tab Bar with 44x44px minimum touch hitboxes and safe-area padding */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200/80 px-2 pt-1.5 pb-safe z-30 shadow-[0_-4px_20px_rgb(0,0,0,0.05)]">
+        <div className="max-w-xl md:max-w-3xl mx-auto flex justify-between items-center">
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`min-w-[56px] min-h-[48px] flex flex-col items-center justify-center gap-1 px-2 rounded-xl transition-all ${
+              activeTab === 'home' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
           >
-            <Plus size={32} strokeWidth={4} />
+            <Home size={20} strokeWidth={activeTab === 'home' ? 2.5 : 2} />
+            <span className="text-[9px] font-black uppercase tracking-wider leading-none">Home</span>
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`min-w-[56px] min-h-[48px] flex flex-col items-center justify-center gap-1 px-2 rounded-xl transition-all ${
+              activeTab === 'history' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <Calendar size={20} strokeWidth={activeTab === 'history' ? 2.5 : 2} />
+            <span className="text-[9px] font-black uppercase tracking-wider leading-none">History</span>
+          </button>
+          
+          <div className="relative px-1">
+            <button 
+              onClick={() => { setEditingMedication(null); setIsAddModalOpen(true); }} 
+              className="w-12 h-12 bg-blue-600 hover:bg-blue-700 rounded-2xl text-white shadow-lg shadow-blue-600/30 flex items-center justify-center active:scale-90 transition-all"
+              title="Add Medication"
+            >
+              <Plus size={24} strokeWidth={3.5} />
+            </button>
+          </div>
+
+          <button
+            onClick={() => setActiveTab('vitals')}
+            className={`min-w-[56px] min-h-[48px] flex flex-col items-center justify-center gap-1 px-2 rounded-xl transition-all ${
+              activeTab === 'vitals' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <Activity size={20} strokeWidth={activeTab === 'vitals' ? 2.5 : 2} />
+            <span className="text-[9px] font-black uppercase tracking-wider leading-none">Vitals</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('care')}
+            className={`min-w-[56px] min-h-[48px] flex flex-col items-center justify-center gap-1 px-2 rounded-xl transition-all ${
+              activeTab === 'care' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <HeartPulse size={20} strokeWidth={activeTab === 'care' ? 2.5 : 2} />
+            <span className="text-[9px] font-black uppercase tracking-wider leading-none">Care</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`min-w-[56px] min-h-[48px] flex flex-col items-center justify-center gap-1 px-2 rounded-xl transition-all ${
+              activeTab === 'chat' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <MessageSquareText size={20} strokeWidth={activeTab === 'chat' ? 2.5 : 2} />
+            <span className="text-[9px] font-black uppercase tracking-wider leading-none">Assistant</span>
           </button>
         </div>
-
-        <button onClick={() => setActiveTab('vitals')} className={`flex flex-col items-center gap-1.5 px-3 transition-all ${activeTab === 'vitals' ? 'text-blue-600 scale-105' : 'text-slate-300'}`}>
-          <Activity size={24} strokeWidth={activeTab === 'vitals' ? 2.5 : 2} />
-          <span className="text-[10px] font-black uppercase tracking-widest leading-none">Vitals</span>
-        </button>
-
-        <button onClick={() => setActiveTab('care')} className={`flex flex-col items-center gap-1.5 px-3 transition-all ${activeTab === 'care' ? 'text-blue-600 scale-105' : 'text-slate-300'}`}>
-          <HeartPulse size={24} strokeWidth={activeTab === 'care' ? 2.5 : 2} />
-          <span className="text-[10px] font-black uppercase tracking-widest leading-none">Care</span>
-        </button>
-
-        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center gap-1.5 px-3 transition-all ${activeTab === 'chat' ? 'text-blue-600 scale-105' : 'text-slate-300'}`}>
-          <MessageSquareText size={24} strokeWidth={activeTab === 'chat' ? 2.5 : 2} />
-          <span className="text-[10px] font-black uppercase tracking-widest leading-none">Assistant</span>
-        </button>
       </nav>
 
       <AddMedicationModal 
@@ -797,6 +888,10 @@ const App: React.FC = () => {
         profiles={profiles} 
         activeProfileId={activeProfileId} 
         onTestNotification={handleTestNotification}
+        onOpenCompatibilityModal={() => {
+          setIsSettingsModalOpen(false);
+          setIsCompatibilityModalOpen(true);
+        }}
       />
       <NotificationModal
         isOpen={isNotificationModalOpen}
@@ -807,6 +902,19 @@ const App: React.FC = () => {
         selectedSound={reminderSound}
         onSelectSound={(s) => setReminderSound(s)}
         nextScheduledDose={nextScheduledDose}
+      />
+      <DeviceCompatibilityModal
+        isOpen={isCompatibilityModalOpen}
+        onClose={() => setIsCompatibilityModalOpen(false)}
+        diagnostics={diagnostics}
+        onPromptInstall={promptInstall}
+        onRequestNotificationPermission={requestPhoneNotificationPermission}
+        onTestNotification={handleTestNotification}
+        onRefreshDiagnostics={refreshDiagnostics}
+        savedMedicationCount={currentMedications.length}
+        selectedSound={reminderSound}
+        compactMode={compactMode}
+        onToggleCompactMode={toggleCompactMode}
       />
       <DuePillAlertModal
         isOpen={!!duePillAlert}

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Check, Settings, Bell, User, ShieldAlert, CreditCard, ChevronRight, Volume2, ArrowLeft, Watch, Link2, Bluetooth, Activity, Download, Plus, Trash2, Shield, FileText, Hash, Users, Smile } from 'lucide-react';
+import { X, Check, Settings, Bell, User, ShieldAlert, CreditCard, ChevronRight, Volume2, ArrowLeft, Watch, Link2, Bluetooth, Activity, Download, Plus, Trash2, Shield, FileText, Hash, Users, Smartphone } from 'lucide-react';
 import { Profile, SoundType } from '../types';
 import { playNotificationSound } from '../services/audioService';
 
@@ -16,16 +16,18 @@ interface SettingsModalProps {
   onConnectWatch?: () => void;
   connectedDeviceName?: string | null;
   onTestNotification?: () => void;
+  onOpenCompatibilityModal?: () => void;
 }
 
 const AVATARS = ['👤', '👩', '👨', '👵', '👴', '👧', '👦', '👶', '🐱', '🐶'];
 const THEME_COLORS = ['blue', 'teal', 'red', 'orange', 'purple', 'pink', 'indigo'];
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ 
-  isOpen, onClose, profiles = [], activeProfileId, onAddProfile, onUpdateProfile, onDeleteProfile, fireBolttConnected = false, onConnectWatch, connectedDeviceName, onTestNotification 
+  isOpen, onClose, profiles = [], activeProfileId, onAddProfile, onUpdateProfile, onDeleteProfile, fireBolttConnected = false, onConnectWatch, connectedDeviceName, onTestNotification, onOpenCompatibilityModal
 }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'family' | 'devices' | 'general'>('profile');
   const [googleFitConnected, setGoogleFitConnected] = useState(false);
+  const [profileSavedToast, setProfileSavedToast] = useState(false);
   
   // Sub-menu states
   const [showSoundSettings, setShowSoundSettings] = useState(false);
@@ -108,8 +110,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const saveProfile = () => {
     if (currentProfileData && onUpdateProfile) {
       onUpdateProfile(currentProfileData);
-      alert('Medical ID updated successfully!');
     }
+    setProfileSavedToast(true);
+    setTimeout(() => setProfileSavedToast(false), 2500);
   };
 
   const handleCreateMember = () => {
@@ -470,7 +473,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   onClick={saveProfile}
                   className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold shadow-lg shadow-slate-200 hover:bg-slate-700 transition-all flex items-center justify-center gap-2"
                 >
-                  <Check size={18} /> Save Changes
+                  <Check size={18} /> {profileSavedToast ? 'Medical ID Saved!' : 'Save Changes'}
               </button>
             </div>
           )}
@@ -656,7 +659,22 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* PREFERENCES TAB */}
           {activeTab === 'general' && (
             <div className="space-y-4 animate-fadeIn">
-               <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+               <div className="bg-white rounded-xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                 {onOpenCompatibilityModal && (
+                   <button 
+                     onClick={onOpenCompatibilityModal}
+                     className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                   >
+                      <div className="flex items-center gap-3">
+                        <Smartphone size={20} className="text-blue-600" />
+                        <div className="text-left">
+                          <p className="font-bold text-slate-700 text-sm">Mobile Compatibility & Health Check</p>
+                          <p className="text-xs text-slate-400">Home Screen install, iOS guide, offline cache & permissions</p>
+                        </div>
+                      </div>
+                      <ChevronRight size={16} className="text-slate-300" />
+                   </button>
+                 )}
                  <button 
                    onClick={() => setShowSoundSettings(true)}
                    className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
@@ -672,7 +690,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                  </button>
               </div>
               <div className="p-4 text-center text-xs text-slate-400">
-                MediMind Version 1.2
+                MediMind Universal Mobile Edition
               </div>
             </div>
           )}
