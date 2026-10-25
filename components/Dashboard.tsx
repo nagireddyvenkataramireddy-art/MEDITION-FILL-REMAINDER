@@ -7,7 +7,7 @@ import { format } from 'date-fns';
 import { 
   Sunrise, Moon, Clock, Smile, Meh, Frown, ThumbsUp, 
   Activity, Target, Plus, Check, Edit, Sparkles, 
-  Calendar, CalendarDays
+  Calendar, CalendarDays, BellRing, AlertCircle
 } from 'lucide-react';
 import { getSmartInsights } from '../services/geminiService';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -28,13 +28,17 @@ interface DashboardProps {
   onSnoozeMedication: (medId: string, time: string, minutes: number) => void;
   onAddMedication: () => void;
   userName: string;
+  notificationPermission?: NotificationPermission;
+  onOpenNotificationCenter?: () => void;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ 
   medications, logs, moods, vitals, snoozedItems, 
   onDeleteMedication, onLogMedication, onRefillMedication, onUpdateMedicationStockSettings, onEditMedication, onUpdateMedication, onLogMood, onSnoozeMedication,
   onAddMedication,
-  userName
+  userName,
+  notificationPermission = 'default',
+  onOpenNotificationCenter
 }) => {
   const todayStr = format(new Date(), 'yyyy-MM-dd');
   const todayLogs = logs.filter(log => log.dateStr === todayStr);
@@ -192,6 +196,48 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
         )}
       </div>
+
+      {/* Phone Notification Banner */}
+      {notificationPermission !== 'granted' && onOpenNotificationCenter ? (
+        <div 
+          onClick={onOpenNotificationCenter}
+          className="mx-1 p-4 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-[2rem] text-white shadow-lg shadow-blue-500/25 flex items-center justify-between cursor-pointer active:scale-[0.99] transition-all border border-blue-400/30"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center flex-shrink-0">
+              <BellRing size={20} className="animate-bounce" />
+            </div>
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider">
+                {notificationPermission === 'denied' ? 'Alerts Blocked in Settings' : 'Turn On Phone Reminders'}
+              </p>
+              <p className="text-[11px] text-white/80 font-medium">
+                {notificationPermission === 'denied' 
+                  ? 'Tap to unblock notifications on your phone' 
+                  : 'Get pill alerts & sound directly on your phone'}
+              </p>
+            </div>
+          </div>
+          <span className="px-3.5 py-2 bg-white text-blue-600 rounded-xl text-xs font-black uppercase tracking-wider flex-shrink-0 shadow-md">
+            {notificationPermission === 'denied' ? 'Fix Now' : 'Turn On'}
+          </span>
+        </div>
+      ) : onOpenNotificationCenter && (
+        <div 
+          onClick={onOpenNotificationCenter}
+          className="mx-1 px-4 py-2.5 bg-white border border-slate-100 rounded-2xl flex items-center justify-between text-slate-700 shadow-sm cursor-pointer hover:bg-slate-50 transition-all active:scale-[0.99]"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <p className="text-xs font-bold text-slate-700">
+              Lock-Screen Reminders Armed & Active
+            </p>
+          </div>
+          <span className="text-[10px] font-black uppercase text-blue-600 tracking-wider flex items-center gap-1">
+            Test / Settings &rarr;
+          </span>
+        </div>
+      )}
 
       {/* Urgent Reminders Section - Moved to TOP as per request */}
       <section className="px-1">

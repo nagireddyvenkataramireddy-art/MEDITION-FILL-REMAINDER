@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Medication, PharmacySearchResponse, ConditionAdvice, Appointment } from '../types';
 import SafetyCheck from './SafetyCheck';
 import { 
@@ -7,7 +6,7 @@ import {
   Plus, X, Stethoscope, Clock, MapPin, 
   ChevronDown, ChevronRight, Heart, 
   CheckCircle2, XCircle, Loader2, Send, Search, List, CalendarDays, Edit2,
-  CalendarPlus, ChevronLeft
+  CalendarPlus, ChevronLeft, Navigation, Phone, ExternalLink
 } from 'lucide-react';
 import { findNearbyPlaces, getConditionAdvice } from '../services/geminiService';
 import { 
@@ -52,6 +51,8 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   const [activeTab, setActiveTab] = useState<'visits' | 'safety' | 'wellness' | 'pharmacy' | 'hospital'>('visits');
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
   const [locationCoords, setLocationCoords] = useState<{lat: number, lng: number} | null>(null);
+  const [locationQuery, setLocationQuery] = useState('');
+  const [locationStatus, setLocationStatus] = useState<string>('');
   const [isAddingAppointment, setIsAddingAppointment] = useState(false); 
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -63,6 +64,7 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   const [time, setTime] = useState('');
   const [location, setLocation] = useState('');
   const [notes, setNotes] = useState('');
+  const [formError, setFormError] = useState('');
 
   // Search States
   const [pharmacies, setPharmacies] = useState<PharmacySearchResponse | null>(null);
@@ -75,26 +77,76 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   const [loadingAdvice, setLoadingAdvice] = useState(false);
   const [lastSearchedCondition, setLastSearchedCondition] = useState('');
 
-  useEffect(() => {
-    if (navigator.geolocation) {
+  const requestCurrentLocation = useCallback((): Promise<{ lat: number; lng: number } | null> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve(null);
+        }
+      }, 4500);
+
       navigator.geolocation.getCurrentPosition(
-        (pos) => setLocationCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        (err) => console.warn("Location access denied")
+        (pos) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            setLocationCoords(coords);
+            resolve(coords);
+          }
+        },
+        () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(null);
+          }
+        },
+        { enableHighAccuracy: true, timeout: 4000, maximumAge: 60000 }
       );
-    }
+    });
   }, []);
 
-  const handleSearchPlaces = async (type: 'pharmacy' | 'hospital') => {
-    if (!locationCoords) {
-      alert("Please enable location services to find nearby facilities.");
-      return;
-    }
+  useEffect(() => {
+    requestCurrentLocation();
+  }, [requestCurrentLocation]);
+
+  const handleSearchPlaces = useCallback(async (type: 'pharmacy' | 'hospital', customQuery?: string) => {
     setSearching(true);
-    const results = await findNearbyPlaces(locationCoords.lat, locationCoords.lng, type);
-    if (type === 'pharmacy') setPharmacies(results);
-    else setHospitals(results);
+    setLocationStatus('Locating nearby facilities...');
+    
+    let coords = locationCoords;
+    const queryToUse = customQuery !== undefined ? customQuery : locationQuery;
+
+    if (!coords && !queryToUse.trim()) {
+      coords = await requestCurrentLocation();
+    }
+
+    const results = await findNearbyPlaces(
+      coords ? coords.lat : null,
+      coords ? coords.lng : null,
+      type,
+      queryToUse
+    );
+
+    if (results?.resolvedCoords && !coords) {
+      setLocationCoords(results.resolvedCoords);
+    }
+
+    if (type === 'pharmacy') {
+      setPharmacies(results);
+    } else {
+      setHospitals(results);
+    }
+    setLocationStatus('');
     setSearching(false);
-  };
+  }, [locationCoords, locationQuery, requestCurrentLocation]);
 
   const handleGetAdvice = async () => {
     if (!conditionInput.trim()) return;
@@ -112,9 +164,10 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
     if (!onAddAppointment) return;
 
     if (!doctorName.trim()) {
-      alert("Please fill in the Doctor Name.");
+      setFormError("Please fill in the Doctor Name.");
       return;
     }
+    setFormError('');
 
     const newAppt: Appointment = {
       id: `appt-${Date.now()}`,
@@ -138,6 +191,7 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
     setTime('');
     setLocation('');
     setNotes('');
+    setFormError('');
   };
 
   const generateGoogleCalendarUrl = (appt: Appointment) => {
@@ -172,10 +226,10 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   const TabButton = ({ id, label, icon }: { id: typeof activeTab, label: string, icon: React.ReactNode }) => (
     <button
       onClick={() => setActiveTab(id)}
-      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-bold transition-all whitespace-nowrap ${
+      className={`flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
         activeTab === id 
           ? 'bg-blue-600 text-white shadow-md' 
-          : 'bg-white text-slate-400 hover:text-slate-600 border border-transparent'
+          : 'bg-white text-slate-500 hover:text-slate-700 border border-slate-100'
       }`}
     >
       {icon} {label}
@@ -185,7 +239,6 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   const labelClass = "block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest";
   const inputClass = "w-full p-4 bg-white border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none font-medium text-slate-800 transition-all placeholder:text-slate-300";
 
-  // Fix: Explicitly type AppointmentItem as React.FC to handle React's reserved props like 'key'
   const AppointmentItem: React.FC<{ appt: Appointment }> = ({ appt }) => {
     const dateObj = parseISO(appt.date);
     return (
@@ -236,88 +289,157 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
     );
   };
 
-  const NearbySection = ({ 
-    type, 
-    results, 
-    onSearch 
-  }: { 
-    type: 'pharmacy' | 'hospital', 
-    results: PharmacySearchResponse | null, 
-    onSearch: () => void 
-  }) => {
+  const renderNearbySection = (type: 'pharmacy' | 'hospital') => {
+    const results = type === 'pharmacy' ? pharmacies : hospitals;
     const title = type === 'pharmacy' ? 'Medical Stores' : 'Hospitals';
     const subTitle = type === 'pharmacy' 
       ? 'Need a refill? Find top-rated pharmacies and medical supply stores near your current location.'
       : 'Emergency or checkup? Find top-rated hospitals and clinics near your current location.';
     const Icon = type === 'pharmacy' ? Pill : Hospital;
     const gradient = type === 'pharmacy' ? 'from-[#00b087] to-[#12c499]' : 'from-[#ff5b5b] to-[#ff8c8c]';
-    
+    const buttonTextColor = type === 'pharmacy' ? 'text-[#00b087]' : 'text-[#ff5b5b]';
+    const directMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      locationQuery.trim()
+        ? `${type === 'pharmacy' ? 'pharmacy medical store' : 'hospital clinic'} near ${locationQuery.trim()}`
+        : `${type === 'pharmacy' ? 'pharmacy medical store' : 'hospital clinic'} near me`
+    )}`;
+
     return (
-      <div className="space-y-6">
-        <div className={`bg-gradient-to-br ${gradient} rounded-[2rem] p-8 text-white shadow-xl relative overflow-hidden min-h-[240px] flex flex-col justify-between`}>
+      <div className="space-y-5">
+        <div className={`bg-gradient-to-br ${gradient} rounded-[2rem] p-7 text-white shadow-xl relative overflow-hidden flex flex-col justify-between`}>
           <div className="relative z-10">
-            <h2 className="text-3xl font-black tracking-tight mb-3">Nearest {title}</h2>
-            <p className="text-white/90 text-[13px] max-w-[280px] leading-relaxed mb-6 font-bold">
+            <h2 className="text-3xl font-black tracking-tight mb-2">Nearest {title}</h2>
+            <p className="text-white/90 text-[13px] max-w-[300px] leading-relaxed mb-5 font-bold">
               {subTitle}
             </p>
           </div>
-          <div className="relative z-10">
+
+          {/* Optional Area / City / Pincode Search Box */}
+          <div className="relative z-10 mb-4">
+            <div className="bg-black/15 backdrop-blur-sm p-1.5 rounded-xl border border-white/20 flex items-center gap-2">
+              <MapPin size={16} className="text-white/80 ml-2 flex-shrink-0" />
+              <input
+                type="text"
+                value={locationQuery}
+                onChange={(e) => setLocationQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSearchPlaces(type, locationQuery);
+                  }
+                }}
+                placeholder="City, area, or pincode (optional)..."
+                className="bg-transparent flex-1 py-2 px-1 text-xs font-bold text-white placeholder:text-white/60 outline-none"
+              />
+              {locationQuery && (
+                <button
+                  type="button"
+                  onClick={() => setLocationQuery('')}
+                  className="p-1.5 text-white/70 hover:text-white"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="relative z-10 flex flex-wrap items-center gap-3">
             <button 
-              onClick={onSearch} 
+              type="button"
+              onClick={() => handleSearchPlaces(type, locationQuery)} 
               disabled={searching} 
-              className="bg-white text-[#12c499] px-6 py-3.5 rounded-xl font-black text-sm shadow-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-80 group"
+              className={`bg-white ${buttonTextColor} px-5 py-3.5 rounded-xl font-black text-sm shadow-xl flex items-center justify-center gap-2 hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-80`}
             >
               {searching ? (
                 <Loader2 size={18} className="animate-spin" />
               ) : (
-                <Search size={18} className="text-[#12c499]" />
+                <Search size={18} />
               )}
-              {searching ? 'Locating...' : results ? 'Search Again' : `Find Nearby ${title}`}
+              {searching ? (locationStatus || 'Locating...') : results ? `Refresh Nearby ${title}` : `Find Nearby ${title}`}
             </button>
+
+            <a
+              href={directMapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-white/20 hover:bg-white/30 text-white border border-white/30 px-4 py-3.5 rounded-xl font-bold text-xs flex items-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Navigation size={14} />
+              Open Google Maps
+            </a>
           </div>
-          <div className="absolute -bottom-10 -right-10 opacity-10">
+
+          <div className="absolute -bottom-10 -right-10 opacity-10 pointer-events-none">
             <Icon size={240} strokeWidth={1} />
           </div>
-          <div className="absolute bottom-10 right-10 w-24 h-24 bg-white/5 rounded-full flex items-center justify-center">
-             <div className="w-12 h-12 bg-white/10 rounded-full flex items-center justify-center">
-               <div className="w-4 h-4 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)]" />
-             </div>
+          <div className="absolute bottom-10 right-10 w-24 h-24 bg-white/5 rounded-full flex items-center justify-center pointer-events-none">
+            <div className="w-12 h-12 bg-white/10 rounded-full flex items-center justify-center">
+              <div className="w-4 h-4 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.6)]" />
+            </div>
           </div>
         </div>
+
         {results && (
           <div className="space-y-4 px-1 pb-4 animate-fadeIn">
             <div className="flex justify-between items-center px-1">
-              <h3 className="font-black text-[#1a2b4d] text-base">Found Locations</h3>
-              <span className="text-[10px] bg-slate-100 text-slate-500 font-black px-3 py-1.5 rounded-full uppercase tracking-wider">
-                {results.places.length} Results
+              <h3 className="font-black text-[#1a2b4d] text-base">Found {title} Near You</h3>
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-black px-3 py-1 rounded-full uppercase tracking-wider">
+                {results.places.length} {results.places.length === 1 ? 'Location' : 'Locations'}
               </span>
             </div>
+
             <div className="space-y-3">
               {results.places.map((place, idx) => (
-                <motion.a 
+                <motion.div 
                   key={idx} 
-                  href={place.uri} 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
-                  className="bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm flex items-center justify-between group hover:border-blue-200 transition-all active:scale-[0.98]"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.03 }}
+                  className="bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm flex items-center justify-between gap-3 hover:border-blue-200 transition-all"
                 >
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-[#f0f9ff] text-[#00b087] border border-[#e0f2fe]">
+                  <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 ${
+                      type === 'pharmacy' 
+                        ? 'bg-emerald-50 text-[#00b087] border border-emerald-100' 
+                        : 'bg-rose-50 text-[#ff5b5b] border border-rose-100'
+                    }`}>
                       <Icon size={22} />
                     </div>
-                    <div>
-                      <h4 className="font-bold text-[#1a2b4d] text-base leading-tight group-hover:text-blue-600 transition-colors">
-                        {place.title}
-                      </h4>
-                      <p className="text-[11px] font-bold text-slate-400 mt-1 flex items-center gap-1">
-                        <MapPin size={10} className="text-slate-300" /> View on Google Maps
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-bold text-[#1a2b4d] text-sm sm:text-base leading-tight truncate">
+                          {place.title}
+                        </h4>
+                        {typeof place.distanceKm === 'number' && (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
+                            {place.distanceKm} km
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs font-medium text-slate-500 mt-1 flex items-center gap-1 truncate">
+                        <MapPin size={12} className="text-slate-400 flex-shrink-0" />
+                        <span className="truncate">{place.address || 'View directions on Google Maps'}</span>
                       </p>
+                      {place.phone && (
+                        <a
+                          href={`tel:${place.phone}`}
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 mt-1.5 hover:underline"
+                        >
+                          <Phone size={11} /> {place.phone}
+                        </a>
+                      )}
                     </div>
                   </div>
-                  <div className="text-slate-200 group-hover:text-blue-400 transition-colors">
-                    <Send size={20} className="rotate-45" />
-                  </div>
-                </motion.a>
+
+                  <a
+                    href={place.uri}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-2.5 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white rounded-xl font-black text-xs flex items-center gap-1.5 transition-all flex-shrink-0 active:scale-95"
+                  >
+                    <span>Directions</span>
+                    <ExternalLink size={13} />
+                  </a>
+                </motion.div>
               ))}
             </div>
           </div>
@@ -329,12 +451,12 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
   return (
     <div className="space-y-6 animate-fadeIn pb-10">
       <div className="px-1 overflow-x-auto no-scrollbar">
-        <div className="flex items-center gap-2 min-w-max pb-2">
-          <TabButton id="visits" label="Visits" icon={<Calendar size={18} />} />
-          <TabButton id="safety" label="Safety" icon={<ShieldCheck size={18} />} />
-          <TabButton id="wellness" label="Wellness" icon={<Heart size={18} />} />
-          <TabButton id="pharmacy" label="Pharmacy" icon={<Pill size={18} />} />
-          <TabButton id="hospital" label="Hospital" icon={<Hospital size={18} />} />
+        <div className="flex items-center gap-2 pb-2">
+          <TabButton id="visits" label="Visits" icon={<Calendar size={16} />} />
+          <TabButton id="safety" label="Safety" icon={<ShieldCheck size={16} />} />
+          <TabButton id="wellness" label="Wellness" icon={<Heart size={16} />} />
+          <TabButton id="pharmacy" label="Pharmacy" icon={<Pill size={16} />} />
+          <TabButton id="hospital" label="Hospital" icon={<Hospital size={16} />} />
         </div>
       </div>
 
@@ -358,6 +480,11 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
                     <X size={24} />
                   </button>
                 </div>
+                {formError && (
+                  <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold">
+                    {formError}
+                  </div>
+                )}
                 <form onSubmit={handleAddAppointment} className="space-y-6">
                   <div>
                     <label className={labelClass}>Doctor Name</label>
@@ -512,13 +639,13 @@ const CareView: React.FC<CareViewProps> = ({ medications, appointments = [], onA
 
         {activeTab === 'pharmacy' && (
           <motion.div key="pharmacy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <NearbySection type="pharmacy" results={pharmacies} onSearch={() => handleSearchPlaces('pharmacy')} />
+            {renderNearbySection('pharmacy')}
           </motion.div>
         )}
 
         {activeTab === 'hospital' && (
           <motion.div key="hospital" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <NearbySection type="hospital" results={hospitals} onSearch={() => handleSearchPlaces('hospital')} />
+            {renderNearbySection('hospital')}
           </motion.div>
         )}
 

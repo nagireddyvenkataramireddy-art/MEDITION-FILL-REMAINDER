@@ -3,18 +3,25 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
-// Robust Service Worker Registration
+// Robust Service Worker Registration for Phone Push Reminders
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    // Use relative path './sw.js' and set scope to './' to avoid origin issues in previews
-    navigator.serviceWorker.register('./sw.js', { scope: './' })
+  const registerSW = () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
       .then(registration => {
-        console.log('SW registered with scope:', registration.scope);
+        console.log('MediMind SW registered with scope:', registration.scope);
       })
       .catch(error => {
-        console.warn('SW registration failed (this is common in preview environments):', error);
+        // Fallback relative scope
+        navigator.serviceWorker.register('./sw.js', { scope: './' })
+          .catch(e => console.warn('SW registration fallback warning:', e));
       });
-  });
+  };
+
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    registerSW();
+  } else {
+    window.addEventListener('load', registerSW);
+  }
 }
 
 const rootElement = document.getElementById('root');

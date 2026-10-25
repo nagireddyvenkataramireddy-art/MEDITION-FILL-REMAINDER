@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { Medication, LogEntry, VitalEntry, MoodEntry, Profile, SnoozeEntry, Appointment } from './types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Medication, LogEntry, VitalEntry, MoodEntry, Profile, SnoozeEntry, Appointment, FrequencyType, SoundType } from './types';
 import Dashboard from './components/Dashboard';
 import AddMedicationModal from './components/AddMedicationModal';
 import HistoryView from './components/HistoryView';
@@ -9,6 +9,9 @@ import AssistantView from './components/AssistantView';
 import CareView from './components/CareView';
 import SettingsModal from './components/SettingsModal';
 import OnboardingModal from './components/OnboardingModal';
+import NotificationModal from './components/NotificationModal';
+import DuePillAlertModal from './components/DuePillAlertModal';
+import { playNotificationSound, initAudio, startStandbyAudioGuard, stopStandbyAudioGuard } from './services/audioService';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Plus, Bell, Home, Calendar, Activity, ChevronDown, User, HeartPulse, MessageSquareText } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -44,8 +47,36 @@ const App: React.FC = () => {
   
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [editingMedication, setEditingMedication] = useState<Medication | null>(null);
+  
+  // Real-time in-app pill due alert modal
+  const [duePillAlert, setDuePillAlert] = useState<{ med: Medication; scheduledTime: string } | null>(null);
+
+  // Phone Notification States
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'default';
+  });
+
+  const [reminderSound, setReminderSound] = useState<SoundType>(() => 
+    (localStorage.getItem('medimind_reminder_sound') as SoundType) || 'alert'
+  );
+
+  const [notifiedDoses, setNotifiedDoses] = useState<Record<string, number>>(() => 
+    safeParse('medimind_notified_doses', {})
+  );
+
+  useEffect(() => {
+    localStorage.setItem('medimind_reminder_sound', reminderSound);
+  }, [reminderSound]);
+
+  useEffect(() => {
+    localStorage.setItem('medimind_notified_doses', JSON.stringify(notifiedDoses));
+  }, [notifiedDoses]);
 
   const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
   const currentMedications = useMemo(() => medications.filter(m => m.profileId === activeProfileId || !m.profileId), [medications, activeProfileId]);
@@ -54,8 +85,8 @@ const App: React.FC = () => {
   const currentVitals = useMemo(() => vitals.filter(v => v.profileId === activeProfileId), [vitals, activeProfileId]);
   const currentMoods = useMemo(() => moods.filter(m => m.profileId === activeProfileId), [moods, activeProfileId]);
 
-  const handleLogMedication = (medId: string, status: 'TAKEN' | 'SKIPPED', time?: string) => {
-    const newLog = {
+  const handleLogMedication = useCallback((medId: string, status: 'TAKEN' | 'SKIPPED', time?: string) => {
+    const newLog: LogEntry = {
       id: uuidv4(),
       profileId: activeProfileId,
       medicationId: medId,
@@ -71,33 +102,238 @@ const App: React.FC = () => {
     if (status === 'TAKEN') {
       setMedications(prev => prev.map(m => m.id === medId ? { ...m, currentStock: Math.max(0, m.currentStock - 1) } : m));
     }
-  };
 
-  const sendNotification = (title: string, body: string, medicationId?: string, scheduledTime?: string) => {
-    // Try using service worker for better background reliability
-    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-      navigator.serviceWorker.ready.then(registration => {
-        registration.showNotification(title, {
-          body,
-          icon: '/favicon.ico',
-          badge: '/favicon.ico',
-          vibrate: [200, 100, 200],
-          tag: medicationId ? `med-${medicationId}-${scheduledTime}` : 'medication-reminder',
-          renotify: true,
-          requireInteraction: true,
-          data: { medicationId, scheduledTime },
-          actions: medicationId && medicationId !== 'test' ? [
-            { action: 'take', title: '✅ Log as Taken' },
-            { action: 'dismiss', title: '✖ Dismiss' }
-          ] : []
-        });
-      });
-    } else {
-      // Fallback to standard Notification
-      new Notification(title, { body, icon: '/favicon.ico', requireInteraction: true });
+    // Dismiss in-app alert if currently showing for this medication
+    setDuePillAlert(prev => (prev && prev.med.id === medId ? null : prev));
+  }, [activeProfileId]);
+
+  const handleSnoozeMedication = useCallback((medId: string, time: string, minutes: number = 15) => {
+    const wakeUpTime = addMinutes(new Date(), minutes).getTime();
+    setSnoozedItems(prev => [
+      ...prev.filter(s => !(s.medicationId === medId && s.scheduledTime === time)),
+      { medicationId: medId, scheduledTime: time, wakeUpTime }
+    ]);
+    setDuePillAlert(prev => (prev && prev.med.id === medId ? null : prev));
+  }, []);
+
+  // Helper to convert VAPID base64 key to Uint8Array for PushManager
+  const urlBase64ToUint8Array = useCallback((base64String: string) => {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
     }
-  };
+    return outputArray;
+  }, []);
 
+  // Ensure Service Worker & Web Push subscription for closed-app / lock-screen alarms
+  const getOrSubscribePush = useCallback(async (): Promise<PushSubscription | null> => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return null;
+    }
+    if (Notification.permission !== 'granted') return null;
+
+    try {
+      let reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) {
+        reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      }
+      await navigator.serviceWorker.ready;
+
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const res = await fetch('/api/push/vapid-public-key');
+        if (res.ok) {
+          const { publicKey } = await res.json();
+          if (publicKey) {
+            sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(publicKey)
+            });
+          }
+        }
+      }
+      return sub;
+    } catch (err) {
+      console.warn('Web Push subscription warning:', err);
+      return null;
+    }
+  }, [urlBase64ToUint8Array]);
+
+  // Reliable Phone Notification Sender (Multi-stage fallback for Android Chrome, WebView, and Desktop)
+  const sendPhoneNotification = useCallback(async (
+    title: string, 
+    body: string, 
+    medicationId?: string, 
+    scheduledTime?: string, 
+    sound?: SoundType
+  ) => {
+    // 1. Play audible sound chime
+    try {
+      playNotificationSound(sound || reminderSound);
+    } catch (e) {
+      console.warn('Audio play error:', e);
+    }
+
+    // 2. Vibrate phone if device supports vibration
+    if ('vibrate' in navigator) {
+      try {
+        navigator.vibrate([500, 250, 500, 250, 500]);
+      } catch (e) {}
+    }
+
+    const APP_ICON = 'https://cdn-icons-png.flaticon.com/512/3063/3063822.png';
+    const tag = medicationId ? `med-${medicationId}-${scheduledTime || 'due'}` : `med-alert-${Date.now()}`;
+
+    // 3. ServiceWorkerRegistration.showNotification() with multi-stage fallback
+    if ('serviceWorker' in navigator) {
+      try {
+        let reg: ServiceWorkerRegistration | undefined | null = null;
+        if (navigator.serviceWorker.controller) {
+          reg = await navigator.serviceWorker.getRegistration();
+        }
+        if (!reg) {
+          reg = await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000))
+          ]);
+        }
+        if (!reg) {
+          reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        }
+
+        if (reg) {
+          try {
+            await reg.showNotification(title, {
+              body,
+              icon: APP_ICON,
+              badge: APP_ICON,
+              vibrate: [500, 250, 500, 250, 500],
+              tag,
+              renotify: true,
+              requireInteraction: true,
+              silent: false,
+              data: { medicationId, scheduledTime, sound: sound || reminderSound },
+              actions: medicationId && medicationId !== 'test' && medicationId !== 'welcome' ? [
+                { action: 'take', title: '✅ Taken' },
+                { action: 'snooze', title: '⏰ Snooze 15m' }
+              ] : [
+                { action: 'dismiss', title: 'Dismiss' }
+              ]
+            } as any);
+            return;
+          } catch (richErr) {
+            // Fallback without actions/renotify for WebViews that reject NotificationAction
+            await reg.showNotification(title, {
+              body,
+              tag,
+              vibrate: [500, 250, 500],
+              requireInteraction: true,
+              data: { medicationId, scheduledTime, sound: sound || reminderSound }
+            } as any);
+            return;
+          }
+        }
+      } catch (swErr) {
+        console.warn('SW notification show failed, trying fallback:', swErr);
+      }
+    }
+
+    // 4. Fallback for WebViews / Desktop browsers
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(title, { 
+          body, 
+          tag
+        });
+      } catch (desktopErr) {
+        console.warn('Fallback Notification constructor failed:', desktopErr);
+      }
+    }
+  }, [reminderSound]);
+
+  // Explicit user gesture request permission handler
+  const requestPhoneNotificationPermission = useCallback(async (): Promise<NotificationPermission> => {
+    initAudio();
+    if (!('Notification' in window)) {
+      return 'denied';
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      setNotificationPermission(perm);
+      if (perm === 'granted') {
+        await sendPhoneNotification(
+          'Phone Reminders Active! 🔔',
+          'MediMind will notify you when it is time to take your pills.',
+          'welcome'
+        );
+        getOrSubscribePush();
+      }
+      return perm;
+    } catch (e) {
+      console.error('Failed to request notification permission:', e);
+      return 'denied';
+    }
+  }, [sendPhoneNotification, getOrSubscribePush]);
+
+  // Test notification helper with support for immediate or delayed background/lock-screen testing
+  const handleTestNotification = useCallback(async (delaySeconds: number = 0) => {
+    initAudio();
+    playNotificationSound(reminderSound);
+    if ('vibrate' in navigator) {
+      navigator.vibrate([400, 200, 400]);
+    }
+
+    // 1. Trigger real Server-Side Web Push (wakes up device even when app is closed and screen is locked)
+    getOrSubscribePush().then(sub => {
+      if (sub) {
+        fetch('/api/push/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subscription: sub,
+            delaySeconds,
+            sound: reminderSound
+          })
+        }).catch(() => {});
+      }
+    });
+
+    if (delaySeconds > 0) {
+      // 2. Also schedule inside Service Worker + local fallback timer
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.active?.postMessage({
+            type: 'SCHEDULE_DELAYED_NOTIFICATION',
+            delayMs: delaySeconds * 1000,
+            title: '⏰ Pill Reminder Test Alert',
+            body: 'Great! You will receive reminders on your phone even when locked.',
+            medicationId: 'test',
+            sound: reminderSound
+          });
+        }).catch(() => {});
+      }
+
+      setTimeout(() => {
+        sendPhoneNotification(
+          '⏰ Pill Reminder Test Alert',
+          'Great! You will receive reminders on your phone even when locked.',
+          'test'
+        );
+      }, delaySeconds * 1000);
+      return;
+    }
+
+    await sendPhoneNotification(
+      '⏰ Pill Reminder Test Alert',
+      'Phone reminders are working! You will get alerts with sound and vibration.',
+      'test'
+    );
+  }, [reminderSound, sendPhoneNotification, getOrSubscribePush]);
+
+  // Save data to localStorage
   useEffect(() => {
     localStorage.setItem('medimind_meds', JSON.stringify(medications));
     localStorage.setItem('medimind_logs', JSON.stringify(logs));
@@ -107,45 +343,34 @@ const App: React.FC = () => {
     localStorage.setItem('medimind_appts', JSON.stringify(appointments));
   }, [medications, logs, vitals, moods, snoozedItems, appointments]);
 
+  // Handle messages from Service Worker (e.g. user tapped "Taken" or "Snooze" in notification tray, or background alarm fired)
   useEffect(() => {
-    // Request notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-  }, []);
-
-  const handleTestNotification = () => {
-    if (!('Notification' in window)) {
-      alert('This browser does not support desktop notifications');
-      return;
-    }
-
-    if (Notification.permission === 'granted') {
-      sendNotification('Test Notification', 'This is a test of your medication reminders!', 'test', 'now');
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then(permission => {
-        if (permission === 'granted') {
-          sendNotification('Test Notification', 'This is a test of your medication reminders!', 'test', 'now');
-        }
-      });
-    } else {
-      alert('Notification permission is denied. Please enable it in your browser settings.');
-    }
-  };
-
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'LOG_MEDICATION') {
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (!event.data) return;
+      if (event.data.type === 'LOG_MEDICATION') {
         handleLogMedication(event.data.medicationId, event.data.status, event.data.scheduledTime);
+      } else if (event.data.type === 'SNOOZE_MEDICATION') {
+        handleSnoozeMedication(event.data.medicationId, event.data.scheduledTime, event.data.minutes || 15);
+      } else if (event.data.type === 'MEDICATION_ALARM_FIRED') {
+        const dose = event.data.dose;
+        if (dose) {
+          playNotificationSound(dose.sound || reminderSound);
+          const med = currentMedications.find(m => m.id === dose.medicationId);
+          if (med) {
+            setDuePillAlert({ med, scheduledTime: dose.time });
+          }
+        }
       }
     };
 
-    navigator.serviceWorker.addEventListener('message', handleMessage);
-    return () => navigator.serviceWorker.removeEventListener('message', handleMessage);
-  }, [medications, activeProfileId]);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+      return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+    }
+  }, [handleLogMedication, handleSnoozeMedication, currentMedications, reminderSound]);
 
+  // Handle actions from URL parameters (when app is opened directly from a notification tap)
   useEffect(() => {
-    // Handle actions from URL parameters (when app is opened from notification)
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action');
     const medId = params.get('medId');
@@ -153,35 +378,249 @@ const App: React.FC = () => {
 
     if (action === 'take' && medId) {
       handleLogMedication(medId, 'TAKEN', time || undefined);
-      // Clean up URL
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-  }, [medications, activeProfileId]);
+  }, [handleLogMedication]);
 
+  // Calculate Next Upcoming Dose for display and alarm scheduling
+  const nextScheduledDose = useMemo(() => {
+    const now = new Date();
+    const currentTime = format(now, 'HH:mm');
+    const todayStr = format(now, 'yyyy-MM-dd');
+    const dayOfWeek = now.getDay();
+    let next: { name: string; time: string; dosage?: string } | null = null;
+
+    currentMedications.forEach(med => {
+      let isScheduledToday = false;
+      if (med.frequency === FrequencyType.DAILY || med.frequency === FrequencyType.INTERVAL) {
+        isScheduledToday = true;
+      } else if (med.frequency === FrequencyType.WEEKLY) {
+        isScheduledToday = !!med.daysOfWeek?.includes(dayOfWeek);
+      }
+      if (!isScheduledToday) return;
+
+      (med.times || []).forEach(time => {
+        const alreadyLogged = currentLogs.some(log => 
+          log.medicationId === med.id && 
+          log.dateStr === todayStr &&
+          log.scheduledTime === time
+        );
+        if (!alreadyLogged && time >= currentTime) {
+          if (!next || time < next.time) {
+            next = { name: med.name, time, dosage: med.dosage };
+          }
+        }
+      });
+    });
+    return next;
+  }, [currentMedications, currentLogs]);
+
+  // Synchronize All Upcoming Doses to Service Worker AND Web Push Backend for True Lock-Screen / Closed-App Alarms
+  const syncScheduleToServiceWorker = useCallback(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+
+    const now = new Date();
+    const nowMs = Date.now();
+
+    const dosesToSync: Array<{
+      id: string;
+      medicationId: string;
+      name: string;
+      dosage: string;
+      instruction?: string;
+      time: string;
+      targetTimestamp: number;
+      sound?: SoundType;
+    }> = [];
+
+    // Schedule for both today (dayOffset = 0) and tomorrow (dayOffset = 1)
+    [0, 1].forEach(dayOffset => {
+      const targetDay = new Date(now);
+      targetDay.setDate(now.getDate() + dayOffset);
+      const dayStr = format(targetDay, 'yyyy-MM-dd');
+      const dayOfWeek = targetDay.getDay();
+
+      currentMedications.forEach(med => {
+        let isScheduled = false;
+        if (med.frequency === FrequencyType.DAILY || med.frequency === FrequencyType.INTERVAL) {
+          isScheduled = true;
+        } else if (med.frequency === FrequencyType.WEEKLY) {
+          isScheduled = !!med.daysOfWeek?.includes(dayOfWeek);
+        }
+        if (!isScheduled) return;
+
+        (med.times || []).forEach(time => {
+          const [hourStr, minStr] = time.split(':');
+          const doseDate = new Date(targetDay);
+          doseDate.setHours(parseInt(hourStr, 10), parseInt(minStr, 10), 0, 0);
+          const targetMs = doseDate.getTime();
+
+          if (dayOffset === 0) {
+            const alreadyLogged = currentLogs.some(log => 
+              log.medicationId === med.id && 
+              log.dateStr === dayStr &&
+              log.scheduledTime === time
+            );
+            if (alreadyLogged) return;
+          }
+
+          const snooze = dayOffset === 0 ? snoozedItems.find(s => 
+            s.medicationId === med.id && 
+            s.scheduledTime === time && 
+            s.wakeUpTime > nowMs
+          ) : undefined;
+
+          const effectiveTargetMs = snooze ? snooze.wakeUpTime : targetMs;
+
+          if (effectiveTargetMs > nowMs - 10 * 60 * 1000 && effectiveTargetMs < nowMs + 36 * 60 * 60 * 1000) {
+            dosesToSync.push({
+              id: `${med.id}_${time}_${dayStr}`,
+              medicationId: med.id,
+              name: med.name,
+              dosage: med.dosage || '1 dose',
+              instruction: med.notes || '',
+              time,
+              targetTimestamp: effectiveTargetMs,
+              sound: med.reminderSound || reminderSound
+            });
+          }
+        });
+      });
+    });
+
+    const payload = {
+      type: 'SYNC_SCHEDULE',
+      doses: dosesToSync
+    };
+
+    const dispatch = (sw: ServiceWorker | null) => {
+      if (sw) {
+        sw.postMessage(payload);
+      }
+    };
+
+    if (navigator.serviceWorker.controller) {
+      dispatch(navigator.serviceWorker.controller);
+    } else {
+      navigator.serviceWorker.ready.then(reg => {
+        dispatch(reg.active);
+      }).catch(() => {});
+    }
+
+    // Also sync to Server-Side Web Push Scheduler so alarms fire even when app is closed!
+    if (Notification.permission === 'granted') {
+      getOrSubscribePush().then(sub => {
+        if (sub) {
+          fetch('/api/push/sync-schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subscription: sub,
+              doses: dosesToSync
+            })
+          }).catch(() => {});
+        }
+      });
+    }
+
+    // Maintain Standby Audio Guardian if enabled in user preferences
+    const isGuardOn = localStorage.getItem('medimind_standby_guard') !== 'false';
+    if (isGuardOn && dosesToSync.length > 0) {
+      const nearest = [...dosesToSync].sort((a, b) => a.targetTimestamp - b.targetTimestamp)[0];
+      startStandbyAudioGuard(`Next: ${nearest.name} at ${nearest.time}`);
+    }
+  }, [currentMedications, currentLogs, snoozedItems, reminderSound, getOrSubscribePush]);
+
+  // Keep Service Worker & Web Push schedule synced
   useEffect(() => {
+    syncScheduleToServiceWorker();
+  }, [syncScheduleToServiceWorker]);
+
+  // Robust Medication Due Checker (Foreground check + instant alert)
+  const checkDueMedications = useCallback(() => {
+    const now = new Date();
+    const currentTime = format(now, 'HH:mm');
+    const todayStr = format(now, 'yyyy-MM-dd');
+    const dayOfWeek = now.getDay();
+    const nowMs = Date.now();
+
+    currentMedications.forEach(med => {
+      let isScheduledToday = false;
+      if (med.frequency === FrequencyType.DAILY || med.frequency === FrequencyType.INTERVAL) {
+        isScheduledToday = true;
+      } else if (med.frequency === FrequencyType.WEEKLY) {
+        isScheduledToday = !!med.daysOfWeek?.includes(dayOfWeek);
+      }
+      if (!isScheduledToday) return;
+
+      (med.times || []).forEach(time => {
+        if (time <= currentTime) {
+          const alreadyLogged = currentLogs.some(log => 
+            log.medicationId === med.id && 
+            log.dateStr === todayStr &&
+            log.scheduledTime === time
+          );
+          if (alreadyLogged) return;
+
+          const isSnoozed = snoozedItems.some(s => 
+            s.medicationId === med.id && 
+            s.scheduledTime === time && 
+            s.wakeUpTime > nowMs
+          );
+          if (isSnoozed) return;
+
+          const doseKey = `${med.id}_${time}_${todayStr}`;
+          if (notifiedDoses[doseKey]) return;
+
+          setNotifiedDoses(prev => {
+            const updated = { ...prev, [doseKey]: nowMs };
+            try {
+              localStorage.setItem('medimind_notified_doses', JSON.stringify(updated));
+            } catch (e) {}
+            return updated;
+          });
+
+          sendPhoneNotification(
+            `⏰ Time for ${med.name}!`,
+            `Scheduled for ${time}. ${med.dosage || '1 dose'}. Tap to log.`,
+            med.id,
+            time,
+            med.reminderSound || reminderSound
+          );
+
+          setDuePillAlert({ med, scheduledTime: time });
+        }
+      });
+    });
+  }, [currentMedications, currentLogs, snoozedItems, notifiedDoses, reminderSound, sendPhoneNotification]);
+
+  // Main Reminder Loop + Focus / Wakeup / Background listeners
+  useEffect(() => {
+    checkDueMedications();
+    syncScheduleToServiceWorker();
+
     const interval = setInterval(() => {
       const now = Date.now();
       setSnoozedItems(prev => prev.filter(s => s.wakeUpTime > now));
-      
-      // Check for due medications
-      currentMedications.forEach(med => {
-        if (med.times && med.times.includes(format(now, 'HH:mm'))) {
-           const alreadyTaken = currentLogs.some(log => 
-             log.medicationId === med.id && 
-             log.dateStr === format(now, 'yyyy-MM-dd') &&
-             log.scheduledTime === format(now, 'HH:mm')
-           );
-           
-           if (!alreadyTaken) {
-             if ('Notification' in window && Notification.permission === 'granted') {
-               sendNotification('Medication Reminder', `It's time to take ${med.name}`, med.id, format(now, 'HH:mm'));
-             }
-           }
-        }
-      });
-    }, 60000);
-    return () => clearInterval(interval);
-  }, [medications, logs, currentMedications, currentLogs]);
+      checkDueMedications();
+    }, 25000);
+
+    const handleWakeup = () => {
+      checkDueMedications();
+      syncScheduleToServiceWorker();
+    };
+
+    window.addEventListener('focus', handleWakeup);
+    window.addEventListener('pagehide', handleWakeup);
+    document.addEventListener('visibilitychange', handleWakeup);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleWakeup);
+      window.removeEventListener('pagehide', handleWakeup);
+      document.removeEventListener('visibilitychange', handleWakeup);
+    };
+  }, [checkDueMedications, syncScheduleToServiceWorker]);
 
   useEffect(() => {
     const hasOnboarded = localStorage.getItem('medimind_onboarding_complete');
@@ -197,14 +636,6 @@ const App: React.FC = () => {
         lastRefillDate: format(new Date(), 'MMM do, yyyy') 
       } : m
     ));
-  };
-
-  const handleSnoozeMedication = (medId: string, time: string, minutes: number) => {
-    const wakeUpTime = addMinutes(new Date(), minutes).getTime();
-    setSnoozedItems(prev => [
-      ...prev.filter(s => !(s.medicationId === medId && s.scheduledTime === time)),
-      { medicationId: medId, scheduledTime: time, wakeUpTime }
-    ]);
   };
 
   const handleAddAppointment = (appt: Appointment) => {
@@ -252,10 +683,17 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex gap-2">
-            <button className="w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors">
-              <Bell size={22} />
+            <button 
+              onClick={() => { initAudio(); setIsNotificationModalOpen(true); }}
+              className="relative w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors active:scale-95"
+              title="Phone Reminders & Alarms"
+            >
+              <Bell size={22} className={notificationPermission === 'granted' ? 'text-blue-600' : 'text-slate-400'} />
+              {notificationPermission !== 'granted' && (
+                <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white animate-pulse" />
+              )}
             </button>
-            <button onClick={() => setIsSettingsModalOpen(true)} className="w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors">
+            <button onClick={() => setIsSettingsModalOpen(true)} className="w-11 h-11 bg-white rounded-full flex items-center justify-center text-slate-400 shadow-sm border border-slate-100 hover:text-blue-500 transition-colors active:scale-95">
               <User size={22} />
             </button>
           </div>
@@ -281,6 +719,8 @@ const App: React.FC = () => {
               onSnoozeMedication={handleSnoozeMedication}
               onAddMedication={() => { setEditingMedication(null); setIsAddModalOpen(true); }}
               userName={activeProfile.name}
+              notificationPermission={notificationPermission}
+              onOpenNotificationCenter={() => { initAudio(); setIsNotificationModalOpen(true); }}
             />
           )}
           {activeTab === 'history' && <HistoryView medications={currentMedications} logs={currentLogs} moods={currentMoods} userName={activeProfile.name} />}
@@ -357,6 +797,32 @@ const App: React.FC = () => {
         profiles={profiles} 
         activeProfileId={activeProfileId} 
         onTestNotification={handleTestNotification}
+      />
+      <NotificationModal
+        isOpen={isNotificationModalOpen}
+        onClose={() => setIsNotificationModalOpen(false)}
+        permission={notificationPermission}
+        onRequestPermission={requestPhoneNotificationPermission}
+        onSendTestNotification={handleTestNotification}
+        selectedSound={reminderSound}
+        onSelectSound={(s) => setReminderSound(s)}
+        nextScheduledDose={nextScheduledDose}
+      />
+      <DuePillAlertModal
+        isOpen={!!duePillAlert}
+        medication={duePillAlert ? duePillAlert.med : null}
+        scheduledTime={duePillAlert ? duePillAlert.scheduledTime : ''}
+        onTake={() => {
+          if (duePillAlert) {
+            handleLogMedication(duePillAlert.med.id, 'TAKEN', duePillAlert.scheduledTime);
+          }
+        }}
+        onSnooze={(mins) => {
+          if (duePillAlert) {
+            handleSnoozeMedication(duePillAlert.med.id, duePillAlert.scheduledTime, mins);
+          }
+        }}
+        onDismiss={() => setDuePillAlert(null)}
       />
       <OnboardingModal isOpen={isOnboardingOpen} onClose={() => { localStorage.setItem('medimind_onboarding_complete', 'true'); setIsOnboardingOpen(false); }} userName={activeProfile.name} />
     </div>

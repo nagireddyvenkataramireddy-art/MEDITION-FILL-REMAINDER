@@ -191,36 +191,169 @@ export const createMedicalChat = (medications: string[]): Chat => {
   });
 };
 
-export const findNearbyPlaces = async (lat: number, lng: number, type: 'pharmacy' | 'hospital'): Promise<PharmacySearchResponse | null> => {
-  if (!process.env.API_KEY) return null;
+export const findNearbyPlaces = async (
+  lat: number | null,
+  lng: number | null,
+  type: 'pharmacy' | 'hospital',
+  queryText: string = ''
+): Promise<PharmacySearchResponse | null> => {
+  // 1. Try server-side endpoint first (combines Overpass + Nominatim + Gemini Maps Grounding)
   try {
-    // Enhanced query to ensure strict 10km radius adherence
-    const query = `Find all nearby ${type}s within a strict 10 kilometer (6.2 miles) radius of my current location. Provide accurate names and direct links to Google Maps.`;
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: query,
-      config: {
-        tools: [{ googleMaps: {} }],
-        toolConfig: {
-          retrievalConfig: {
-            latLng: {
-              latitude: lat,
-              longitude: lng
-            }
+    const res = await fetch('/api/places/nearby', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng, type, queryText })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.places) && data.places.length > 0) {
+        return data as PharmacySearchResponse;
+      }
+    }
+  } catch (serverErr) {
+    console.warn('Server nearby search fallback to client:', serverErr);
+  }
+
+  // 2. Client-side fallback (for standalone APK / offline server scenarios)
+  try {
+    let targetLat = lat;
+    let targetLng = lng;
+
+    if (queryText.trim()) {
+      const geoRes = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(queryText.trim())}`
+      );
+      if (geoRes.ok) {
+        const geoData = await geoRes.json();
+        if (Array.isArray(geoData) && geoData.length > 0) {
+          targetLat = parseFloat(geoData[0].lat);
+          targetLng = parseFloat(geoData[0].lon);
+        }
+      }
+    }
+
+    // If still no coords, fallback to IP geolocation
+    if (targetLat === null || targetLng === null) {
+      try {
+        const ipRes = await fetch('https://get.geojs.io/v1/ip/geo.json');
+        if (ipRes.ok) {
+          const ipData = await ipRes.json();
+          if (ipData.latitude && ipData.longitude) {
+            targetLat = parseFloat(ipData.latitude);
+            targetLng = parseFloat(ipData.longitude);
           }
         }
-      },
-    });
+      } catch (e) {}
+    }
 
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    const places = chunks
-      .filter((chunk: any) => chunk.maps)
-      .map((chunk: any) => ({
-        title: chunk.maps.title || (type === 'pharmacy' ? "Medical Store" : "Hospital"),
-        uri: chunk.maps.uri || "#"
-      }));
+    const places: PharmacySearchResponse['places'] = [];
 
-    return { places };
+    if (targetLat !== null && targetLng !== null) {
+      const getDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        const R = 6371;
+        const dLat = ((lat2 - lat1) * Math.PI) / 180;
+        const dLon = ((lon2 - lon1) * Math.PI) / 180;
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos((lat1 * Math.PI) / 180) *
+            Math.cos((lat2 * Math.PI) / 180) *
+            Math.sin(dLon / 2) *
+            Math.sin(dLon / 2);
+        return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10;
+      };
+
+      // Query OpenStreetMap Overpass API directly
+      try {
+        const radiusMeters = 10000;
+        const filter =
+          type === 'pharmacy'
+            ? `node["amenity"="pharmacy"](around:${radiusMeters},${targetLat},${targetLng});way["amenity"="pharmacy"](around:${radiusMeters},${targetLat},${targetLng});node["shop"="chemist"](around:${radiusMeters},${targetLat},${targetLng});`
+            : `node["amenity"="hospital"](around:${radiusMeters},${targetLat},${targetLng});way["amenity"="hospital"](around:${radiusMeters},${targetLat},${targetLng});node["amenity"="clinic"](around:${radiusMeters},${targetLat},${targetLng});`;
+        const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `data=${encodeURIComponent(`[out:json][timeout:10];(${filter});out center 20;`)}`
+        });
+        if (overpassRes.ok) {
+          const overpassData = await overpassRes.json();
+          for (const el of overpassData?.elements || []) {
+            const name = el.tags?.name || el.tags?.['name:en'];
+            if (!name) continue;
+            const elLat = el.lat ?? el.center?.lat;
+            const elLng = el.lon ?? el.center?.lon;
+            if (typeof elLat !== 'number' || typeof elLng !== 'number') continue;
+            const dist = getDistanceKm(targetLat, targetLng, elLat, elLng);
+            const street = [el.tags?.['addr:street'], el.tags?.['addr:suburb'] || el.tags?.['addr:city']].filter(Boolean).join(', ');
+            places.push({
+              title: name,
+              uri: `https://www.google.com/maps/dir/?api=1&destination=${elLat},${elLng}`,
+              address: street || `${dist} km from your location`,
+              distanceKm: dist,
+              phone: el.tags?.phone || el.tags?.['contact:phone'],
+              lat: elLat,
+              lng: elLng
+            });
+          }
+        }
+      } catch (e) {}
+
+      // Also try Gemini Maps Grounding if API key present
+      if (process.env.API_KEY && places.length < 3) {
+        try {
+          const query = `Find all nearby ${type === 'pharmacy' ? 'pharmacies and medical stores' : 'hospitals and clinics'} within a 10 kilometer radius. Provide accurate names and direct links to Google Maps.`;
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: query,
+            config: {
+              tools: [{ googleMaps: {} }],
+              toolConfig: {
+                retrievalConfig: {
+                  latLng: {
+                    latitude: targetLat,
+                    longitude: targetLng
+                  }
+                }
+              }
+            }
+          });
+
+          const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+          chunks
+            .filter((chunk: any) => chunk.maps)
+            .forEach((chunk: any) => {
+              const title = chunk.maps.title || (type === 'pharmacy' ? 'Medical Store' : 'Hospital');
+              if (!places.some(p => p.title.toLowerCase() === title.toLowerCase())) {
+                places.push({
+                  title,
+                  uri: chunk.maps.uri || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(title)}`,
+                  address: 'View on Google Maps'
+                });
+              }
+            });
+        } catch (e) {}
+      }
+
+      places.sort((a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999));
+      if (places.length > 0) {
+        return { places, resolvedCoords: { lat: targetLat, lng: targetLng } };
+      }
+    }
+
+    // Guaranteed fallback link so user is never left with an empty screen
+    const fallbackQuery = queryText.trim()
+      ? `${type === 'pharmacy' ? 'pharmacy medical store' : 'hospital clinic'} near ${queryText.trim()}`
+      : `${type === 'pharmacy' ? 'pharmacy medical store' : 'hospital clinic'} near me`;
+
+    return {
+      places: [
+        {
+          title: type === 'pharmacy' ? 'Open Nearby Medical Stores in Google Maps' : 'Open Nearby Hospitals in Google Maps',
+          uri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fallbackQuery)}`,
+          address: 'Tap to view live map & directions around your location'
+        }
+      ],
+      resolvedCoords: targetLat !== null && targetLng !== null ? { lat: targetLat, lng: targetLng } : undefined
+    };
   } catch (error) {
     console.error("Error finding places:", error);
     return null;
@@ -240,7 +373,7 @@ export const getConditionAdvice = async (condition: string): Promise<ConditionAd
   if (!process.env.API_KEY) return null;
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.8-flash",
       contents: `Provide dietary advice for someone with ${condition}. Include recommended foods and foods to avoid. Return JSON only.`,
       config: {
         responseMimeType: "application/json",

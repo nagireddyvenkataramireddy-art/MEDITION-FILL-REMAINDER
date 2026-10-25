@@ -135,10 +135,16 @@ export interface SnoozeEntry {
 export interface PharmacyPlace {
   title: string;
   uri: string;
+  address?: string;
+  distanceKm?: number;
+  phone?: string;
+  lat?: number;
+  lng?: number;
 }
 
 export interface PharmacySearchResponse {
   places: PharmacyPlace[];
+  resolvedCoords?: { lat: number; lng: number };
 }
 
 export interface ConditionAdvice {
